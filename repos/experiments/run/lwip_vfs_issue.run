@@ -1,0 +1,109 @@
+create_boot_directory
+
+set depot_archives { }
+set build_components { }
+
+lappend depot_archives [depot_user]/pkg/[drivers_nic_pkg]
+lappend depot_archives [depot_user]/src/[base_src]
+lappend depot_archives [depot_user]/src/init
+lappend depot_archives [depot_user]/src/nic_router
+lappend depot_archives [depot_user]/src/vfs_lwip
+
+lappend build_components app/lwip_vfs_issue
+
+set config {
+	<config>
+		<parent-provides>
+			<service name="CPU"/>
+			<service name="LOG"/>
+			<service name="PD"/>
+			<service name="RM"/>
+			<service name="ROM"/>
+		</parent-provides>
+
+		<start name="timer" caps="100">
+			<resource name="RAM" quantum="1M"/>
+			<provides>
+				<service name="Timer"/>
+			</provides>
+			<route>
+				<any-service> <parent/> </any-service>
+			</route>
+		</start>
+
+		<start name="drivers" caps="1000" managing_system="yes">
+			<resource name="RAM" quantum="32M"/>
+			<binary name="init"/>
+			<route>
+				<service name="ROM" label="config"> <parent label="drivers.config"/> </service>
+				<service name="Timer"> <child name="timer"/> </service>
+				<service name="Uplink"> <child name="nic_router"/> </service>
+				<any-service> <parent/> </any-service>
+			</route>
+		</start>
+
+		<start name="nic_router" caps="100">
+			<resource name="RAM" quantum="8M"/>
+			<provides>
+				<service name="Nic"/>
+				<service name="Uplink"/>
+			</provides>
+			<config>
+				<policy label_prefix="drivers" domain="uplink"/>
+				<policy label_prefix="lwip_vfs_issue" domain="server"/>
+
+				<domain name="uplink" interface="10.0.2.55/24" gateway="10.0.2.1">
+					<nat domain="server"
+					     tcp-ports="16384"
+					     udp-ports="16384"
+					     icmp-ids="16384"/>
+				</domain>
+
+				<domain name="server" interface="10.10.10.1/24">
+					<dhcp-server ip_first="10.10.10.2" ip_last="10.10.10.2">
+						<dns-server ip="8.8.8.8"/>
+					</dhcp-server>
+					<tcp dst="0.0.0.0/0"> <permit-any domain="uplink"/> </tcp>
+					<udp dst="0.0.0.0/0"> <permit-any domain="uplink"/> </udp>
+					<icmp dst="0.0.0.0/0" domain="uplink"/>
+				</domain>
+			</config>
+			<route>
+				<service name="Timer"> <child name="timer"/> </service>
+				<any-service> <parent/> </any-service>
+			</route>
+		</start>
+
+		<start name="lwip_vfs_issue" caps="150">
+			<resource name="RAM" quantum="32M"/>
+			<config>
+				<libc stdout="/dev/log" stderr="/dev/log"
+				      rng="/dev/random" rtc="/dev/rtc" socket="/socket"/>
+				<vfs>
+					<dir name="dev">
+						<log/>
+						<null/>
+						<inline name="random">01234567890123456789</inline>
+						<inline name="rtc">2000-01-01 00:00</inline>
+					</dir>
+					<dir name="socket"> <lwip dhcp="yes"/> </dir>
+				</vfs>
+			</config>
+			<route>
+				<service name="Nic"> <child name="nic_router"/> </service>
+				<service name="Timer"> <child name="timer"/> </service>
+				<any-service> <parent/> </any-service>
+			</route>
+		</start>
+	</config>
+}
+
+import_from_depot $depot_archives
+
+build $build_components
+
+install_config $config
+
+build_boot_image [build_artifacts]
+
+run_genode_until {curl returned: 0} 30
